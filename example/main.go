@@ -6,19 +6,19 @@ import (
 	"net/http"
 	"os"
 
+	goshopify "github.com/bold-commerce/go-shopify/v3"
+
 	shopifyoauth "github.com/ttyfky/go-shopify-oauth"
 )
 
 func main() {
 	h := shopifyoauth.NewClient(
-		&shopifyoauth.App{
-			AppName:      os.Getenv("APP_NAME"),
-			APIKey:       os.Getenv("API_KEY"),
-			APISecret:    os.Getenv("API_SECRET"),
-			Scope:        os.Getenv("SCOPE"),
-			GrantOptions: os.Getenv("GRANT_OPTION"),
+		&goshopify.App{
+			ApiKey:      os.Getenv("API_KEY"),
+			ApiSecret:   os.Getenv("API_SECRET"),
+			Scope:       os.Getenv("SCOPE"),
+			RedirectUrl: os.Getenv("SERVICE_URL") + shopifyoauth.RedirectPath,
 		},
-		os.Getenv("SERVICE_URL"),
 		shopifyoauth.DefaultAccessTokenHandle,
 	)
 	http.HandleFunc("/", h.DefaultAuthorizeHandler())

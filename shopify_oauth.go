@@ -7,11 +7,12 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+
+	goshopify "github.com/bold-commerce/go-shopify/v3"
 )
 
 type Client struct {
-	App          *App
-	ServiceURL   string
+	App          *goshopify.App
 	ShopState    map[string]string
 	HTTPClient   *http.Client
 	TokenHandler TokenHandler
@@ -25,10 +26,9 @@ type App struct {
 	GrantOptions string
 }
 
-func NewClient(app *App, u string, th TokenHandle) *Client {
+func NewClient(app *goshopify.App, th TokenHandle) *Client {
 	return &Client{
 		App:          app,
-		ServiceURL:   u,
 		ShopState:    make(map[string]string),
 		HTTPClient:   http.DefaultClient,
 		TokenHandler: th,
@@ -40,23 +40,19 @@ func (c Client) CacheState(shop, state string) {
 }
 
 type TokenHandler interface {
-	Handle(*AccessToken) error
+	Handle(string) error
 }
 
-type TokenHandle func(*AccessToken) error
+type TokenHandle func(string) error
 
-func (th TokenHandle) Handle(token *AccessToken) error {
+func (th TokenHandle) Handle(token string) error {
 	return th(token)
 }
 
 // DefaultAccessTokenHandle is a default handler of AccessToken.
-func DefaultAccessTokenHandle(at *AccessToken) error {
-	log.Printf("got access token for scope %s", at.Scope)
+func DefaultAccessTokenHandle(token string) error {
+	log.Printf("Got access token: len(token) = %d", len(token))
 	return nil
-}
-
-func isUnsuccessfulStatusCode(code int) bool {
-	return http.StatusBadRequest <= code
 }
 
 func randomString() string {

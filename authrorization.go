@@ -1,15 +1,12 @@
 package shopifyoauth
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 
 	"golang.org/x/xerrors"
-
-	"github.com/google/go-querystring/query"
 )
 
 const AuthZURL = "https://%s/admin/oauth/authorize"
@@ -39,46 +36,27 @@ func newShopParam(u *url.URL) *ShopParam {
 	}
 }
 
-func (c *Client) authorizeOption(sp *ShopParam) *AuthorizeOption {
-	return &AuthorizeOption{
-		ClientID:     c.App.APIKey,
-		Scope:        c.App.Scope,
-		RedirectURI:  fmt.Sprintf("%s%s", c.ServiceURL, RedirectPath),
-		State:        c.ShopState[sp.Shop],
-		GrantOptions: c.App.GrantOptions,
-	}
-}
-
 // ShopParam is params sent from Shopify on AuthZ process start.
 type ShopParam struct {
-	HMAC      string
-	Shop      string
-	TimeStamp string
-}
-
-func (sp *ShopParam) verifyHMAC() bool {
-	// TODO impliment
-	return true
-}
-
-func (sp *ShopParam) verifyShop() bool {
-	// TODO impliment
-	return true
+	HMAC      string `url:"hmac"`
+	Shop      string `url:"shop"`
+	TimeStamp string `url:"timestamp"`
 }
 
 // PrepareRedirect generates an URL of Shopify for user's AuthZ view.
 // While generating an URL, keep nonce per shop ID for CSRF prevention.
-func (c *Client) PrepareRedirect(r *http.Request) (*url.URL, error) {
-	sp := newShopParam(r.URL)
-
-	c.CacheState(sp.Shop, randomString())
-	v, err := query.Values(c.authorizeOption(sp))
+func (c *Client) PrepareRedirect(r *http.Request) (string, error) {
+	verified, err := c.App.VerifyAuthorizationURL(r.URL)
 	if err != nil {
-		return nil, xerrors.Errorf("failed to generate params for redirect: %w", err)
+		return "", err
 	}
-	authzURL, _ := url.Parse(fmt.Sprintf(AuthZURL, sp.Shop))
-	authzURL.RawQuery = v.Encode()
-	return authzURL, nil
+	if !verified {
+		return "", ErrURLVerification
+	}
+	sp := newShopParam(r.URL)
+	state := randomString()
+	c.CacheState(sp.Shop, state)
+	return c.App.AuthorizeUrl(sp.Shop, state), nil
 }
 
 // DefaultAuthorizeHandler is HTTP handler to respond AuthZ trigger to Shopify.
@@ -88,14 +66,19 @@ func (c *Client) DefaultAuthorizeHandler() http.HandlerFunc {
 		if debugReq {
 			_ = dumpRequest(os.Stdout, "token", r) // Ignore the error
 		}
-
+		log.Printf("Processing request of %s", r.URL.RawPath)
 		authzURL, err := c.PrepareRedirect(r)
 		if err != nil {
+			if xerrors.Is(err, ErrURLVerification) {
+				log.Printf("URL unverified %s", r.URL)
+				w.WriteHeader(http.StatusBadRequest)
+			}
 			log.Printf("Failed to generate redirect URL for Shopify due to %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Location", authzURL.String())
+		log.Printf("Redirecting to %s", authzURL)
+		w.Header().Set("Location", authzURL)
 		w.WriteHeader(http.StatusFound)
 	}
 }

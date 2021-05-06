@@ -1,17 +1,13 @@
 package shopifyoauth
 
 import (
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 
 	"golang.org/x/xerrors"
-
-	"github.com/google/go-querystring/query"
 )
 
 // AccessTokenURL is the URL to extract access token of Shopify.
@@ -77,60 +73,43 @@ func newShopAccessTokenParam(u *url.URL) *ShopAccessTokenParam {
 
 func (c *Client) accessTokenRequestPayload(code string) *AccessTokenRequestPayload {
 	return &AccessTokenRequestPayload{
-		ClientID:     c.App.APIKey,
-		ClientSecret: c.App.APISecret,
+		ClientID:     c.App.ApiKey,
+		ClientSecret: c.App.ApiSecret,
 		Code:         code,
 	}
 }
 
-func (s *ShopAccessTokenParam) Validate(nonce string) bool {
+func (c *Client) VerifyRedirect(r *http.Request, p *ShopAccessTokenParam) (bool, error) {
 	// TODO: implement.
-	return s.verifyHMAC() && s.verifyShop() && nonce == s.Nonce
+	urlVerified, err := c.App.VerifyAuthorizationURL(r.URL)
+	if err != nil {
+		return false, xerrors.Errorf("URL verification process failed %w", err)
+	}
+	if !urlVerified {
+		return false, ErrURLVerification
+	}
+	if p.Nonce != c.ShopState[p.Shop] {
+		return false, ErrStateVerification
+	}
+	return true, nil
 }
 
-func (c *Client) GetAccessToken(r *http.Request) (*AccessToken, *ShopAccessTokenParam, error) {
+func (c *Client) GetAccessToken(r *http.Request) (string, *ShopAccessTokenParam, error) {
 	p := newShopAccessTokenParam(r.URL)
-	if !p.Validate(c.ShopState[p.Shop]) {
-		return nil, p, xerrors.Errorf("request from Shopify had invalid params")
-	}
 
-	at, err := c.getAccessTokenFromShopify(p)
+	verified, err := c.VerifyRedirect(r, p)
 	if err != nil {
-		return nil, p, err
+		return "", p, xerrors.Errorf("verification process failure: %w", err)
 	}
-	return at, p, nil
-}
+	if !verified {
+		return "", p, xerrors.Errorf("verification failure: %w", err)
+	}
 
-func (c *Client) getAccessTokenFromShopify(p *ShopAccessTokenParam) (*AccessToken, error) {
-	v, err := query.Values(c.accessTokenRequestPayload(p.Code))
+	token, err := c.App.GetAccessToken(p.Shop, p.Code)
 	if err != nil {
-		return nil, xerrors.Errorf("failed to decode auth token payload: %w", err)
+		return "", p, err
 	}
-
-	res, err := c.HTTPClient.PostForm(fmt.Sprintf(AccessTokenURL, p.Shop), v)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to request to access_token: %w", err)
-	}
-
-	if isUnsuccessfulStatusCode(res.StatusCode) {
-		b, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			return nil, xerrors.Errorf("got unsuccessful response code %d but failed to read response body: %w", res.StatusCode, err)
-		}
-		return nil, xerrors.Errorf("unsuccessful request to access_token endpoint: status: %d, msg: %s", res.StatusCode, string(b))
-	}
-
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to read response body; %w", err)
-	}
-
-	at := &AccessToken{}
-	err = json.Unmarshal(b, at)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to unmarshal AccessToken: %w", err)
-	}
-	return at, nil
+	return token, p, nil
 }
 
 func (c *Client) DefaultOAuthRedirectHandler() http.HandlerFunc {
@@ -138,16 +117,26 @@ func (c *Client) DefaultOAuthRedirectHandler() http.HandlerFunc {
 		if debugReq {
 			_ = dumpRequest(os.Stdout, "token", r) // Ignore the error
 		}
+		log.Printf("Generating Access Token\n")
 
-		at, p, err := c.GetAccessToken(r)
+		token, p, err := c.GetAccessToken(r)
 		if err != nil {
 			log.Printf("Failed to get access token with param %+v due to %s", p.Shop, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		// TODO: add process access token
-		log.Printf("%+v\n", at)
-		w.Header().Set("Location", fmt.Sprintf(DefaultDestinationURL, p.Shop))
+		log.Printf("Successfully get access tokent for %s", p.Shop)
+
+		err = c.TokenHandler.Handle(token)
+		if err != nil {
+			log.Printf("Failed to process token %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+
+		destURL := fmt.Sprintf(DefaultDestinationURL, p.Shop)
+		log.Printf("Redirecting to %s", destURL)
+
+		w.Header().Set("Location", destURL)
 		w.WriteHeader(http.StatusFound)
 	}
 }
